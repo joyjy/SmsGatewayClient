@@ -16,15 +16,15 @@ namespace SmsGatewayClient.SMGP
     {
         private readonly string cpId;
         private readonly string password;
-        private readonly string serviceId;
+        private readonly string appCode;
         private readonly string appPhone;
 
-        public SmgpConnection(string host, int port, string cpId, string password, string serviceId, string appPhone)
+        public SmgpConnection(string host, int port, string cpId, string password, string appCode, string appPhone)
             : base(host, port)
         {
             this.cpId = cpId;
             this.password = password;
-            this.serviceId = serviceId;
+            this.appCode = appCode;
             this.appPhone = appPhone;
         }
 
@@ -54,11 +54,7 @@ namespace SmsGatewayClient.SMGP
                 Version = 30,
             };
 
-            Console.WriteLine("[{0}]Sending:{1}", DateTime.Now, message);
-
             var resp = new SmgpLoginRespMessage(SendAndWait(socket, message));
-
-            Console.WriteLine("[{0}]Received:{1}", DateTime.Now, resp);
             Assert.AreEqual(message.SequenceId, resp.SequenceId);
 
             return resp.Status;
@@ -88,7 +84,7 @@ namespace SmsGatewayClient.SMGP
                     {
                         SequenceId = NextSequenceId(),
                         MsgType = 6,
-                        ServiceId = serviceId,
+                        ServiceId = appCode,
                         FeeType = "00",
                         FeeCode = "0",
                         FixedFee = "0",
@@ -115,13 +111,8 @@ namespace SmsGatewayClient.SMGP
         /// <returns></returns>
         protected override uint SubmitTemplate(SmsMessage message)
         {
-            var send = message as SmgpSubmitMessage;
-            Console.WriteLine("[{0}]Sending:{1}", DateTime.Now, message);
-
             var resp = new SmgpSubmitRespMessage(SendAndWait(socket, message));
-
-            Console.WriteLine("[{0}]Received:{1}", DateTime.Now, resp);
-            Assert.AreEqual(send.SequenceId, resp.SequenceId);
+            Assert.AreEqual(((SmgpSubmitMessage) message).SequenceId, resp.SequenceId);
 
             return resp.Status;
         }
@@ -137,11 +128,7 @@ namespace SmsGatewayClient.SMGP
                 SequenceId = NextSequenceId()
             };
 
-            Console.WriteLine("[{0}]Sending:{1}", DateTime.Now, message);
-
             var resp = new SmgpActiveTestRespMessage(SendAndWait(smsSocket, message));
-
-            Console.WriteLine("[{0}]Received:{1}", DateTime.Now, resp);
             Assert.AreEqual(message.SequenceId, resp.SequenceId);
 
             Thread.Sleep(3 * 60 * 1000); // TODO: 配置
@@ -154,12 +141,12 @@ namespace SmsGatewayClient.SMGP
         /// <returns></returns>
         protected override SmsMessage Handle(byte[] buffer)
         {
-            switch (BitHelper.SubUInt32(buffer, SmgpMessage.RequestIdIndex))
+            uint requestId = BitHelper.SubUInt32(buffer, SmgpMessage.RequestIdIndex);
+            switch (requestId)
             {
                 case SmgpRequestId.Active_Test:
                     {
                         var message = new SmgpActiveTestMessage(buffer);
-                        Console.WriteLine("[{0}]Handle:{1}", DateTime.Now, message);
                         var ack = new SmgpActiveTestRespMessage
                             {
                                 SequenceId = message.SequenceId
@@ -169,7 +156,6 @@ namespace SmsGatewayClient.SMGP
                 case SmgpRequestId.Deliver:
                     {
                         var message = new SmgpDeliverMessage(buffer);
-                        Console.WriteLine("[{0}]Handle:{1}", DateTime.Now, message);
                         var ack = new SmgpDeliverRespMessage
                         {
                             SequenceId = message.SequenceId,
@@ -178,7 +164,8 @@ namespace SmsGatewayClient.SMGP
                         };
                         return ack;
                     }
-                default: throw new NotImplementedException();
+                default:
+                    return null;// throw new NotImplementedException("UnHandleRequest: " + requestId);
             }
         }
     }

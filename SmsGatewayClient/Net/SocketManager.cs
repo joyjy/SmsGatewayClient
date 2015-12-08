@@ -18,8 +18,9 @@ namespace SmsGatewayClient.Net
         /// </summary>
         /// <param name="host"></param>
         /// <param name="port"></param>
+        /// <param name="trafficControl"></param>
         /// <returns></returns>
-        public static SmsSocket Get(string host, int port)
+        public static SmsSocket Get(string host, int port, int trafficControl)
         {
             var key = host + port;
             if (sockets.ContainsKey(key))
@@ -34,7 +35,7 @@ namespace SmsGatewayClient.Net
                     return sockets[key];
                 }
 
-                var socket = new SmsSocket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+                var socket = new SmsSocket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp, trafficControl);
                 socket.Connect(host, port);
                 sockets.Add(key, socket);
                 return socket;
@@ -48,7 +49,7 @@ namespace SmsGatewayClient.Net
         /// <returns></returns>
         public static SmsSocket Reconnect(SmsSocket socket)
         {
-            var newSocket = new SmsSocket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
+            var newSocket = new SmsSocket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp, socket.TrafficControl)
                 {
                     KeepAlive = socket.KeepAlive
                 };

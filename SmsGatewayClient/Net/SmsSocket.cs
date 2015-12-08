@@ -8,16 +8,33 @@ namespace SmsGatewayClient.Net
     /// </summary>
     public class SmsSocket : Socket
     {
+        /// <summary>
+        /// 
+        /// </summary>
         public volatile byte[] Locker = new byte[0];
 
         /// <summary>
         /// 当前 Socket 上尚未回复的短信数量
         /// </summary>
-        public int Traffic;
+        private readonly Semaphore traffic;
 
-        public SmsSocket(AddressFamily addressFamily, SocketType socketType, ProtocolType protocolType) 
+        /// <summary>
+        /// 短信流量限制
+        /// </summary>
+        private readonly int trafficControl;
+
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="addressFamily"></param>
+        /// <param name="socketType"></param>
+        /// <param name="protocolType"></param>
+        /// <param name="trafficControl"></param>
+        public SmsSocket(AddressFamily addressFamily, SocketType socketType, ProtocolType protocolType, int trafficControl) 
             : base(addressFamily, socketType, protocolType)
         {
+            this.trafficControl = trafficControl;
+            traffic = new Semaphore(trafficControl, trafficControl);
         }
 
         /// <summary>
@@ -29,5 +46,29 @@ namespace SmsGatewayClient.Net
         /// 用于发送心跳包的线程
         /// </summary>
         public Thread KeepAlive { get; set; }
+
+        /// <summary>
+        /// 
+        /// </summary>
+        public int TrafficControl
+        {
+            get { return trafficControl; }
+        }
+
+        /// <summary>
+        /// 
+        /// </summary>
+        public void WaitTraffic()
+        {
+            traffic.WaitOne();
+        }
+
+        /// <summary>
+        /// 
+        /// </summary>
+        public void ReleaseTraffic()
+        {
+            traffic.Release();
+        }
     }
 }

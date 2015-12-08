@@ -63,11 +63,7 @@ namespace SmsGatewayClient.CMPP
                     AuthenticatorSource = CmppConnectMessage.Sign(cpId, password, timestamp),
                 };
 
-            Console.WriteLine("[{0}]Sending:{1}", DateTime.Now, message);
-
             var resp = new CmppConnectRespMessage(SendAndWait(socket, message));
-
-            Console.WriteLine("[{0}]Received:{1}", DateTime.Now, resp);
             Assert.AreEqual(message.SequenceId, resp.SequenceId);
 
             return resp.Status;
@@ -122,15 +118,8 @@ namespace SmsGatewayClient.CMPP
         /// <returns></returns>
         protected override uint SubmitTemplate(SmsMessage message)
         {
-            var send = message as CmppSubmitMessage;
-
-            Console.WriteLine("[{0}]Sending:{1}", DateTime.Now, message);
-
             var resp = new CmppSubmitRespMessage(SendAndWait(socket, message));
-
-            Console.WriteLine("[{0}]Received:{1}", DateTime.Now, resp);
-
-            Assert.AreEqual(send.SequenceId, resp.SequenceId);
+            Assert.AreEqual(((CmppSubmitMessage) message).SequenceId, resp.SequenceId);
 
             return resp.Result;
         }
@@ -146,11 +135,7 @@ namespace SmsGatewayClient.CMPP
                 SequenceId = NextSequenceId()
             };
 
-            Console.WriteLine("[{0}]Sending:{1}", DateTime.Now, message);
-
-            var resp = new CmppActiveTestRespMessage(SendAndWait(socket, message));
-
-            Console.WriteLine("[{0}]Received:{1}", DateTime.Now, resp);
+            var resp = new CmppActiveTestRespMessage(SendAndWait(smsSocket, message));
             Assert.AreEqual(message.SequenceId, resp.SequenceId);
 
             Thread.Sleep(3 * 60 * 1000); // TODO: 配置
@@ -163,19 +148,20 @@ namespace SmsGatewayClient.CMPP
         /// <returns></returns>
         protected override SmsMessage Handle(byte[] buffer)
         {
-            switch (BitHelper.SubUInt32(buffer, CmppMessage.CommandIdIndex))
+            uint commandId = BitHelper.SubUInt32(buffer, CmppMessage.CommandIdIndex);
+            switch (commandId)
             {
                 case CmppCommandId.CMPP_ACTIVE_TEST:
                     {
                         var message = new CmppActiveTestMessage(buffer);
-                        Console.WriteLine("[{0}]Handle:{1}", DateTime.Now, message);
                         var ack = new CmppActiveTestRespMessage
                         {
                             SequenceId = message.SequenceId
                         };
                         return ack;
                     }
-                default: throw new NotImplementedException();
+                default:
+                    return null; // throw new NotImplementedException("UnHandleRequest: " + commandId);
             }
         }
     }

@@ -4,8 +4,6 @@ using System.Collections.Generic;
 using System.Net.Sockets;
 using System.Threading;
 
-using Microsoft.VisualStudio.TestTools.UnitTesting;
-
 using SmsGatewayClient.Common;
 using SmsGatewayClient.Net;
 
@@ -16,14 +14,13 @@ namespace SmsGatewayClient
     /// </summary>
     public abstract class SmsConnection : IDisposable
     {
-        private const int Size = 100; // TODO config
+        private const int Size = 30;
 
         private static readonly byte[] sidLocker = new byte[0];
         private static long sequenceId;
 
         protected static readonly Random Random = new Random();
 
-        private static readonly byte[] enterLocker = new byte[0];
         private static readonly Queue<SocketAsyncEventArgs> sendPool = new Queue<SocketAsyncEventArgs>();
         private static readonly Queue<SocketAsyncEventArgs> receivePool = new Queue<SocketAsyncEventArgs>();
 
@@ -45,7 +42,7 @@ namespace SmsGatewayClient
         {
             get
             {
-                return string.Format("Traffic:\t{0}\nTotal Send:\t{1} - {2}\nTotal Receive:\t{3} - {4}", socket.Traffic, trySending, totalSend, tryReceiving, totalReceived);
+                return string.Format("Total Send:\t{0} - {1}\nTotal Receive:\t{2} - {3}", trySending, totalSend, tryReceiving, totalReceived);
             }
         }
 
@@ -56,24 +53,7 @@ namespace SmsGatewayClient
         /// <param name="port"></param>
         protected SmsConnection(string host, int port)
         {
-            socket = SocketManager.Get(host, port);
-            // 同一 IP 永远只属于一家运营商，则同一 Socket 上的心跳包格式一样；
-            if (socket.KeepAlive == null)
-            {
-                socket.KeepAlive = new Thread(() =>
-                    {
-                        while (socket.Connected)
-                        {
-                            Heartbeat(socket);
-                        }
-                        socket.IsLogin = false;
-                        Console.WriteLine("连接已断开。"); // TODO: 重连一定次数后 raise exception
-                    });
-            }
-            new Thread(() =>
-            {
-                while (!disposed) { Receive(socket); Thread.Sleep(10); }
-            }).Start();
+            socket = SocketManager.Get(host, port, TrafficControl);
         }
 
         /// <summary>
@@ -122,23 +102,43 @@ namespace SmsGatewayClient
 
                 if (socket.IsLogin)
                 {
-                    if (!socket.KeepAlive.IsAlive)
+                    if (socket.KeepAlive == null || !socket.KeepAlive.IsAlive)
                     {
-                        socket.KeepAlive = new Thread(() =>
-                        {
-                            while (socket.Connected)
-                            {
-                                Heartbeat(socket);
-                            }
-                            socket.IsLogin = false;
-                            Console.WriteLine("连接已断开。"); // TODO: 重连一定次数后 raise exception
-                        });
-                        socket.KeepAlive.Start();
+                        socket.KeepAlive = KeepAlive();
+                        socket.KeepAlive.Start(socket);
                     }
                 }
 
                 return status;
             }
+        }
+
+        private Thread KeepAlive()
+        {
+            return new Thread(state =>
+                {
+                    var selfSocket = (SmsSocket)state;
+                    while (selfSocket != null)
+                    {
+                        if (!selfSocket.Connected)
+                        {
+                            selfSocket.IsLogin = false;
+                            break;
+                        }
+                        try
+                        {
+                            Heartbeat(selfSocket);
+                        }
+                        catch (Exception)
+                        {
+                            if (selfSocket != null)
+                            {
+                                selfSocket.IsLogin = false;
+                            }
+                            break;
+                        }
+                    }
+                });
         }
 
         /// <summary>
@@ -235,11 +235,14 @@ namespace SmsGatewayClient
         /// <param name="ack"></param>
         private void Send(SmsMessage ack)
         {
+            if (disposed)
+            {
+                return;
+            }
+
             SocketAsyncEventArgs sendArgs;
             try
             {
-                SpinWait.SpinUntil(() => sendPool.Count < Size);
-
                 lock (((ICollection)sendPool).SyncRoot)
                 {
                     sendArgs = sendPool.Dequeue();
@@ -270,17 +273,15 @@ namespace SmsGatewayClient
         /// <returns></returns>
         protected byte[] SendAndWait(SmsSocket smsSocket, SmsMessage message)
         {
+            if (smsSocket == null)
+            {
+                return null;
+            }
+
             SocketAsyncEventArgs sendArgs;
             try
             {
-                SpinWait.SpinUntil(() => sendPool.Count < Size);
-
-                lock (enterLocker)
-                {
-                    SpinWait.SpinUntil(() => smsSocket.Traffic < TrafficControl); // 同一 Socket 上的流量控制
-                    smsSocket.Traffic++; // 增加正在请求数量
-                }
-
+                smsSocket.WaitTraffic();
                 lock (((ICollection)sendPool).SyncRoot)
                 {
                     sendArgs = sendPool.Dequeue();
@@ -299,6 +300,7 @@ namespace SmsGatewayClient
                 messageBuffer.Add(token.SequenceId, token);
             }
 
+            sendArgs.AcceptSocket = smsSocket;
             sendArgs.UserToken = token;
             var buffer = message.ToBytes();
             sendArgs.SetBuffer(buffer, 0, buffer.Length); // 填充要发送的数据
@@ -311,9 +313,7 @@ namespace SmsGatewayClient
             }
 
             WaitHandle.WaitAll(new WaitHandle[] { token.WaitHandle }, 60 * 1000); // 等待异步请求结束
-            Assert.IsTrue(socket.Traffic <= TrafficControl);
 
-            Interlocked.Decrement(ref smsSocket.Traffic); // 减少正在请求数量
             lock (msgLocker)
             {
                 messageBuffer.Remove(token.SequenceId);
@@ -339,8 +339,11 @@ namespace SmsGatewayClient
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="e"></param>
-        private static void AfterSend(object sender, SocketAsyncEventArgs e)
+        private void AfterSend(object sender, SocketAsyncEventArgs e)
         {
+            var smsSocket = (SmsSocket)e.AcceptSocket;
+            smsSocket.ReleaseTraffic();
+
             Interlocked.Increment(ref totalSend);
 
             var token = (WaitingDataToken)e.UserToken;
@@ -352,12 +355,23 @@ namespace SmsGatewayClient
                     token.SocketError = e.SocketError;
                     token.WaitHandle.Set();
                 }
+                else
+                {
+                    Receive(smsSocket);
+                }
             }
 
-            SocketManager.Clear(e);
-            lock (((ICollection)sendPool).SyncRoot)
+            if (sendPool.Count < Size)
             {
-                sendPool.Enqueue(e);
+                SocketManager.Clear(e);
+                lock (((ICollection)sendPool).SyncRoot)
+                {
+                    sendPool.Enqueue(e);
+                }
+            }
+            else
+            {
+                e.Dispose();
             }
         }
 
@@ -370,8 +384,6 @@ namespace SmsGatewayClient
             SocketAsyncEventArgs receiveArgs;
             try
             {
-                SpinWait.SpinUntil(() => sendPool.Count < Size);
-
                 lock (((ICollection)receivePool).SyncRoot)
                 {
                     receiveArgs = receivePool.Dequeue(); // 从连接池中取出 receiveArgs
@@ -426,10 +438,17 @@ namespace SmsGatewayClient
             token.Bytes = bytes;
             token.WaitHandle.Set();
 
-            SocketManager.Clear(e);
-            lock (((ICollection)receivePool).SyncRoot)
+            if (receivePool.Count < Size)
             {
-                receivePool.Enqueue(e);
+                SocketManager.Clear(e);
+                lock (((ICollection)receivePool).SyncRoot)
+                {
+                    receivePool.Enqueue(e);
+                }
+            }
+            else
+            {
+                e.Dispose();
             }
         }
 
@@ -438,8 +457,8 @@ namespace SmsGatewayClient
         /// </summary>
         public void Dispose()
         {
-            socket = null;
             disposed = true;
+            socket = null;
         }
 
         /// <summary>
@@ -460,7 +479,7 @@ namespace SmsGatewayClient
             }
             else // 长短信
             {
-                var index = no*limit - headLength;
+                var index = no * limit - headLength;
 
                 var length = Math.Min(limit - headLength, content.Length - index);
 
@@ -474,11 +493,11 @@ namespace SmsGatewayClient
 
                 if (no == 0)
                 {
-                    Array.Copy(content, 0, message.MsgContent, headLength, length);
+                    Array.Copy(content, 0, message.MsgContent, 6, length);
                 }
                 else
                 {
-                    Array.Copy(content, index, message.MsgContent, headLength, length);
+                    Array.Copy(content, index, message.MsgContent, 6, length);
                 }
 
             }
